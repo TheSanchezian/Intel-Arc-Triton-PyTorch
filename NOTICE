@@ -1,0 +1,17 @@
+arc-ternary-triton
+
+This project builds on the Flint-40B model (ternary PQ2_0 2-bit mixture-of-experts), which is licensed under
+the Apache License 2.0. Trained multiplier files derived from it are published at
+https://huggingface.co/TheSanchezian/Ternary-Flint-40B-Intel-Arc
+
+This repository contains code only; it does not include the model weights.
+
+Modifications and additions in this repository:
+- Triton unpack kernels for PQ2_0 expert weights (kernels/ternary_unpack.py), bit-identical to the torch unpack.
+- A PyTorch XPU training implementation of Flint-40B that trains only the per-expert-row scale multipliers
+  (trainer/flint_torch.py, trainer/flint_train.py, trainer/flint_supervisor.py), with batched expert groups,
+  expert-sorted grouping, routing reuse, one host-to-device copy per layer, and blocked attention.
+- trainer/flint_rt.py: GGUF reader / PQ2_0 layout helpers and an OpenCL inference runtime, used by the trainer.
+- Windows Triton setup scripts and notes (setup/).
+
+Written and trained with help from Claude (Anthropic).

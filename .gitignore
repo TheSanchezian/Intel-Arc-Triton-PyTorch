@@ -1,0 +1,15 @@
+*.pt
+*.gguf
+*.npy
+*.safetensors
+*.log
+logs/
+run/
+run*/
+scratch*/
+cortex_state/
+__pycache__/
+*.pyc
+venv/
+.venv/
+level_zero_sdk/
