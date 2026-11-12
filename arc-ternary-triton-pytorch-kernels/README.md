@@ -1,4 +1,4 @@
-# arc-ternary-triton
+# arc-ternary-triton-pytorch-kernels
 
 Triton unpack kernels and a PyTorch XPU trainer for ternary PQ2_0 (2-bit) mixture-of-experts weights, built to train Flint-40B on a single Intel Arc A770 16 GB under Windows.
 
@@ -96,7 +96,7 @@ The script sets `PYTORCH_ALLOC_CONF=expandable_segments:True`, loads the MSVC an
 
 ## Credits and license
 
-- Flint-40B model and its authors: Apache License 2.0. This repo builds on the model; see [NOTICE](NOTICE).
+- Flint-40B model and its authors: Apache License 2.0. This repo builds on the model; see [NOTICE](../NOTICE).
 - Base model on Hugging Face: [TheSanchezian/Ternary-Flint-40B-Intel-Arc](https://huggingface.co/TheSanchezian/Ternary-Flint-40B-Intel-Arc).
-- Code in this repo: Apache License 2.0, see [LICENSE](LICENSE).
+- Code in this repo: Apache License 2.0, see [LICENSE](../LICENSE).
 - Trained and written with help from Claude (Anthropic).
