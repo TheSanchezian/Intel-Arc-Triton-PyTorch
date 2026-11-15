@@ -94,6 +94,29 @@ The script sets `PYTORCH_ALLOC_CONF=expandable_segments:True`, loads the MSVC an
 
 `flint_torch.py` falls back to a plain torch unpack (and prints a warning) if the Triton kernels cannot be imported.
 
+## Two-GPU model split (longer examples)
+
+`trainer/flint_torch_split.py` splits Flint across two Arc GPUs: layers 0..26 plus embeddings on `xpu:0`, layers 27..48 plus final norm, head and loss on `xpu:1` (the split point is chosen automatically from layer sizes). Only the hidden state (and its gradient) crosses between the cards. Each GPU holds its own multipliers and Adam state; saves use the same format as the single-GPU trainer, so a run can switch between the two.
+
+This is a model split, not data parallel: the two cards take turns, so speed matches one GPU. The gain is memory headroom for longer training examples.
+
+Measured on 2x Arc A770 16 GB (one forward + backward pass per example, chunk 1,024 tokens, fp32):
+
+| Example length | tok/s | Peak GPU 0 | Peak GPU 1 |
+|---:|---:|---:|---:|
+| 4,096 | 101 | 7.1 GiB | 6.4 GiB |
+| 6,144 | 103 | 7.1 GiB | 6.5 GiB |
+| 8,192 | 101 | 7.4 GiB | 6.7 GiB |
+| 10,240 | 96 | 7.6 GiB | 6.8 GiB |
+| 12,288 | 91 | 7.8 GiB | 7.0 GiB |
+| 16,384 | 78 | 8.4 GiB | 7.5 GiB |
+
+For comparison, the single-GPU trainer peaks at about 12.8 GiB at 4,096 tokens.
+
+Correctness: split vs single-device on the same 512-token example matched with loss within 1e-6 to 4e-4 relative and gradients within about 1e-5 relative, apart from repetitions where MoE routing ties flip (gradient differences of about 2e-3 to 4e-3; single-GPU runs show the same kind of routing-tie noise, at about 1e-3). A Triton unpack probe was bit-identical on both devices, and the cross-device hand-off was exact.
+
+Run it with `trainer\start_train_split.bat` (same variables as `start_train.bat`, plus `MAXTOK`, default 16,384, and `SPLIT_AT`, default automatic).
+
 ## Credits and license
 
 - Flint-40B model and its authors: Apache License 2.0. This repo builds on the model; see [NOTICE](../NOTICE).
