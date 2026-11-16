@@ -57,6 +57,8 @@ The layer expert pipeline went from 116 ms to 34 ms with the Triton unpack. In s
 kernels/ternary_unpack.py   production Triton unpack kernels (contiguous range, expert-id gather)
 tests/test_unpack.py        standalone correctness + timing test (random data, no model)
 trainer/                    flint_torch.py (model), flint_train.py, flint_supervisor.py, flint_rt.py (GGUF reader), start_train.bat
+                            flint_lora.py, flint_train_lora*.py (LoRA, fast path, packing), export_folded.py, start_train_lora_pack.bat
+kernels/fused_kernels.py    fused RMSNorm and SwiGLU Triton kernels (fast path)
 setup/                      Windows Triton setup notes, triton_env.bat, triton_check.py
 ```
 
@@ -116,6 +118,32 @@ For comparison, the single-GPU trainer peaks at about 12.8 GiB at 4,096 tokens.
 Correctness: split vs single-device on the same 512-token example matched with loss within 1e-6 to 4e-4 relative and gradients within about 1e-5 relative, apart from repetitions where MoE routing ties flip (gradient differences of about 2e-3 to 4e-3; single-GPU runs show the same kind of routing-tie noise, at about 1e-3). A Triton unpack probe was bit-identical on both devices, and the cross-device hand-off was exact.
 
 Run it with `trainer\start_train_split.bat` (same variables as `start_train.bat`, plus `MAXTOK`, default 16,384, and `SPLIT_AT`, default automatic).
+
+## LoRA, fast path and sequence packing
+
+After the multiplier phases, training moved to LoRA adapters on top of the frozen ternary weights.
+
+- **LoRA** (`trainer/flint_lora.py`): rank 16, alpha 32, on attention, the two dense FFN layers and the shared experts, plus one adapter per projection kind shared by all 256 routed experts. 27.14M trainable fp32 parameters (103.5 MB). Learning rate 1e-5 (1e-4 diverged).
+- **Fast path** (`flint_train_lora_fast.py --fast`): the trained per-row multipliers are folded into the GGUF scales once with `trainer/export_folded.py`, so the forward pass no longer multiplies them in, and RMSNorm and SwiGLU use fused Triton kernels (`kernels/fused_kernels.py`). Requires `--freeze-mult`; pass the folded GGUF as `--gguf`.
+- **Sequence packing** (`flint_train_lora_pack.py --pack`): short examples are packed into one 1,024-token chunk with a block-diagonal causal mask, positions (RoPE) restarting at each example, no KV carried between examples, and a loss mask per example. Examples longer than the chunk are trained unpacked, as before.
+
+Measured on one Arc A770 16 GB, fp32, chunk 1,024:
+
+| Test | Result |
+|---|---|
+| Fast path, real-conditions test | 1.43x faster (1.6-1.7x on full chunks); loss matched the unfused path within 0.03%; peak 13.2 GiB |
+| Fast path, live training | +10-25% (about 68-78 tok/s), smaller than the test because of fixed per-step cost on short examples |
+| Packing, 200 real training examples, packed vs unpacked | 58.5 -> 105.5 trained tok/s (1.80x); 200 -> 97 optimizer steps; 26.6 -> 14.7 min; peak 12.48 -> 12.29 GiB |
+| Packing, leakage check | changing one packed example changed another example's attention output by exactly 0.0 |
+| Packing, per-example loss vs unpacked | within 1.5e-6 relative |
+| Packing, LoRA gradient vs unpacked | 5.1e-3 relative L2 (expected: one update now averages several examples) |
+| Live run, mixed data up to 10,240 tokens | 77-83 trained tok/s; about 16% of steps were packable because many examples exceed 1,024 tokens |
+
+Run it with `trainer\start_train_lora_pack.bat` (variables listed at the top of the script). The script restarts the trainer after each 2-hour stop or crash and retries at 9,216 tokens after an out-of-memory crash.
+
+Known issue: periodic evals run only when the step count lands exactly on a multiple of `--eval-every`; an example that spans several chunks can step past it, so some evals are skipped.
+
+Also measured (micro-benchmark, one A770): `torch.mm` bf16 reaches about 71 TFLOPS (56 with fp32 output) against about 18 TFLOPS fp32, while Triton `tl.dot` stays near 0.05-0.14 TFLOPS on this build. Fast matmuls on Arc should go through oneDNN (`torch.mm`/`bmm`), not `tl.dot`.
 
 ## Credits and license
 
