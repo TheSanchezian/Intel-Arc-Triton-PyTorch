@@ -57,7 +57,7 @@ The layer expert pipeline went from 116 ms to 34 ms with the Triton unpack. In s
 kernels/ternary_unpack.py   production Triton unpack kernels (contiguous range, expert-id gather)
 tests/test_unpack.py        standalone correctness + timing test (random data, no model)
 trainer/                    flint_torch.py (model), flint_train.py, flint_supervisor.py, flint_rt.py (GGUF reader), start_train.bat
-                            flint_lora.py, flint_train_lora*.py (LoRA, fast path, packing, experimental bf16x2), export_folded.py, start_train_lora_pack.bat
+                            flint_lora.py, flint_train_lora*.py (LoRA, fast path, packing, experimental bf16x2, chunk options in flint_train_lora_c2k.py), export_folded.py, start_train_lora_pack.bat
 kernels/fused_kernels.py    fused RMSNorm and SwiGLU Triton kernels (fast path)
 setup/                      Windows Triton setup notes, triton_env.bat, triton_check.py
 ```
@@ -139,11 +139,32 @@ Measured on one Arc A770 16 GB, fp32, chunk 1,024:
 | Packing, LoRA gradient vs unpacked | 5.1e-3 relative L2 (expected: one update now averages several examples) |
 | Live run, mixed data up to 10,240 tokens | 77-83 trained tok/s; about 16% of steps were packable because many examples exceed 1,024 tokens |
 
-Run it with `trainer\start_train_lora_pack.bat` (variables listed at the top of the script). The script restarts the trainer after each 2-hour stop or crash and retries at 9,216 tokens after an out-of-memory crash.
+Run it with `trainer\start_train_lora_pack.bat` (or `trainer\start_train_lora_c1536.bat` for the faster chunk 1,536 setting below) (variables listed at the top of the script). The script restarts the trainer after each 2-hour stop or crash and retries at 9,216 tokens after an out-of-memory crash.
 
 Known issue: periodic evals run only when the step count lands exactly on a multiple of `--eval-every`; an example that spans several chunks can step past it, so some evals are skipped.
 
 Also measured (micro-benchmark, one A770): `torch.mm` bf16 reaches about 71 TFLOPS (56 with fp32 output) against about 18 TFLOPS fp32, while Triton `tl.dot` stays near 0.05-0.14 TFLOPS on this build. Fast matmuls on Arc should go through oneDNN (`torch.mm`/`bmm`), not `tl.dot`.
+
+## Chunk size: 1,536 is the sweet spot on 16 GB
+
+`trainer/flint_train_lora_c2k.py` (same trainer as the packing one, plus chunk-size and memory options) with `--chunk 1536 --pack-max 1536`; start it with `trainer\start_train_lora_c1536.bat`.
+
+Each step has a large fixed cost (unpacking all experts' weights in three passes, many kernel launches), so more tokens per step helps until VRAM runs out. Head-to-head on one A770, fp32, both GPUs running in parallel under the same conditions, warm-up steps excluded:
+
+| Setting | 40 real examples (<= 3k tokens), trained tok/s | 2 long examples (~5k tokens), trained tok/s | Peak reserved VRAM |
+|---|---|---|---|
+| chunk 1,024 | 66.5 | 72.7 | 12.9 / 13.4 GiB |
+| **chunk 1,536** | **87.6** | **89.3** | **13.4 / 13.9 GiB** |
+| chunk 2,048 + saved layer inputs in pinned host memory | 48.5 | 54.4 | 13.2 / 13.9 GiB, but 1.2-3.3 GB spilled into Windows shared GPU memory |
+| chunk 2,048, no extras | stopped | - | spilled immediately |
+
+Live training run at chunk 1,536 (mixed data up to 8,188 tokens): 83.8 trained tok/s over 250 steps (about 78 at chunk 1,024 on the same run), peak 13.8 GiB, no shared-memory spill.
+
+Lessons:
+- Chunk 512 halves throughput; chunk 2,048 spills on a 16 GB card. On Windows, going over about 14 GiB silently spills into shared GPU memory (system RAM) and gets much slower instead of failing.
+- Pinned host buffers (`--offload-inputs`) count against Windows shared GPU memory, so moving saved activations to pinned memory backfired.
+- Experimental options in this file (off by default): `--attn-heads-split N`, `--fused-unpack` with `--moe-group 32`, `--reuse-buffers`. The fused unpack with groups of 32 pushed memory to 18 GiB at chunk 1,024 (buffers kept alive by the autograd graph) and is not recommended yet.
+- Measure answer tokens and all processed tokens: a half-filled packed chunk makes a bigger chunk look slower than it is.
 
 ## Experimental: bf16x2 two-product matmuls
 
