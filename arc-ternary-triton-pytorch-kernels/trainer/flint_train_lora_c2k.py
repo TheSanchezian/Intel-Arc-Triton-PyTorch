@@ -800,6 +800,16 @@ def main():
         rows = [json.loads(l) for l in open(a.val_new, encoding="utf-8")]
         val_new = [d for d in rows if d["tokens"] <= a.eval_max_tokens][:a.val_new_examples]
 
+    def _due(key, every):
+        """True once each time the step count crosses a multiple of `every` (a multi-chunk example
+        can step past an exact multiple, which a plain modulo check would miss)."""
+        blk = state["steps"] // every
+        last = state.setdefault(key, blk)
+        if blk > last:
+            state[key] = blk
+            return True
+        return False
+
     def evaluate(tag, vset=None, name="val_loss"):
         vset = val if vset is None else vset
         te, tot, cnt = time.time(), 0.0, 0.0
@@ -890,8 +900,8 @@ def main():
                 log(step=state["steps"], ex=cur_idx, src=d.get("source"), chunk=ci, tokens=n_tok, loss=loss,
                     grad_norm=round(gn, 4), sec=round(dt, 1),
                     gib=round(torch.xpu.memory_allocated() / 2**30, 2), res_gib=round(torch.xpu.memory_reserved() / 2**30, 2))
-                if a.eval_every and state["steps"] % a.eval_every == 0: evaluate("periodic")
-                if val_new and a.val_new_every and state["steps"] % a.val_new_every == 0: evaluate("periodic", val_new)
+                if a.eval_every and _due("_ev_blk", a.eval_every): evaluate("periodic")
+                if val_new and a.val_new_every and _due("_vn_blk", a.val_new_every): evaluate("periodic", val_new)
                 if state["steps"] % 10 == 0:
                     say(f"step {state['steps']}: loss {loss:.3f}, {n_tok} tokens in {dt:.0f} s, "
                         f"{state['tokens'] / 1e3:.0f}k trained tokens, peak {torch.xpu.max_memory_allocated() / 2**30:.1f} GiB")
@@ -936,8 +946,8 @@ def main():
                 log(step=state["steps"], ex=cur_idx, src=d.get("source"), chunk=ci, tokens=n_tok, loss=loss,
                     grad_norm=round(gn, 4), sec=round(dt, 1),
                     gib=round(torch.xpu.memory_allocated() / 2**30, 2), res_gib=round(torch.xpu.memory_reserved() / 2**30, 2))
-                if a.eval_every and state["steps"] % a.eval_every == 0: evaluate("periodic")
-                if val_new and a.val_new_every and state["steps"] % a.val_new_every == 0: evaluate("periodic", val_new)
+                if a.eval_every and _due("_ev_blk", a.eval_every): evaluate("periodic")
+                if val_new and a.val_new_every and _due("_vn_blk", a.val_new_every): evaluate("periodic", val_new)
                 if state["steps"] % 10 == 0:
                     say(f"step {state['steps']}: loss {loss:.3f}, {n_tok} tokens in {dt:.0f} s, "
                         f"{state['tokens'] / 1e3:.0f}k trained tokens, peak {torch.xpu.max_memory_allocated() / 2**30:.1f} GiB")
@@ -981,8 +991,8 @@ def main():
                     log(step=state["steps"], ex=cur_idx, src=d.get("source"), chunk=ci, tokens=n_tok, loss=loss,
                         grad_norm=round(gn, 4), sec=round(dt, 1),
                         gib=round(torch.xpu.memory_allocated() / 2**30, 2), res_gib=round(torch.xpu.memory_reserved() / 2**30, 2))
-                    if a.eval_every and state["steps"] % a.eval_every == 0: evaluate("periodic")
-                    if val_new and a.val_new_every and state["steps"] % a.val_new_every == 0: evaluate("periodic", val_new)
+                    if a.eval_every and _due("_ev_blk", a.eval_every): evaluate("periodic")
+                    if val_new and a.val_new_every and _due("_vn_blk", a.val_new_every): evaluate("periodic", val_new)
                     if state["steps"] % 10 == 0:
                         say(f"step {state['steps']}: loss {loss:.3f}, {n_tok} tokens in {dt:.0f} s, "
                             f"{state['tokens'] / 1e3:.0f}k trained tokens, peak {torch.xpu.max_memory_allocated() / 2**30:.1f} GiB")
@@ -1102,8 +1112,8 @@ def main():
                             grad_norm=round(gn, 4), sec=round(dt, 1),
                             gib=round(torch.xpu.memory_allocated() / 2**30, 2), res_gib=round(torch.xpu.memory_reserved() / 2**30, 2))
 
-                    if a.eval_every and state["steps"] % a.eval_every == 0: evaluate("periodic")
-                    if val_new and a.val_new_every and state["steps"] % a.val_new_every == 0: evaluate("periodic", val_new)
+                    if a.eval_every and _due("_ev_blk", a.eval_every): evaluate("periodic")
+                    if val_new and a.val_new_every and _due("_vn_blk", a.val_new_every): evaluate("periodic", val_new)
                     if state["steps"] % 10 == 0:
                         say(f"step {state['steps']}: loss {loss:.3f}, {n_tok} tokens in {dt:.0f} s, "
                             f"{state['tokens'] / 1e3:.0f}k trained tokens, peak {torch.xpu.max_memory_allocated() / 2**30:.1f} GiB")

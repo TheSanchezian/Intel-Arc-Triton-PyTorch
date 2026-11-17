@@ -1,4 +1,4 @@
-# arc-ternary-triton-pytorch-kernels
+﻿# arc-ternary-triton-pytorch-kernels
 
 Triton unpack kernels and a PyTorch XPU trainer for ternary PQ2_0 (2-bit) mixture-of-experts weights, built to train Flint-40B on a single Intel Arc A770 16 GB under Windows.
 
@@ -141,7 +141,7 @@ Measured on one Arc A770 16 GB, fp32, chunk 1,024:
 
 Run it with `trainer\start_train_lora_pack.bat` (or `trainer\start_train_lora_c1536.bat` for the faster chunk 1,536 setting below) (variables listed at the top of the script). The script restarts the trainer after each 2-hour stop or crash and retries at 9,216 tokens after an out-of-memory crash.
 
-Known issue: periodic evals run only when the step count lands exactly on a multiple of `--eval-every`; an example that spans several chunks can step past it, so some evals are skipped.
+Known issue: in `flint_train_lora_pack.py` / `flint_train_lora_fast.py`, periodic evals run only when the step count lands exactly on a multiple of `--eval-every`; an example that spans several chunks can step past it, so some evals are skipped. Fixed in `flint_train_lora_c2k.py` (evals fire whenever the step count crosses a multiple).
 
 Also measured (micro-benchmark, one A770): `torch.mm` bf16 reaches about 71 TFLOPS (56 with fp32 output) against about 18 TFLOPS fp32, while Triton `tl.dot` stays near 0.05-0.14 TFLOPS on this build. Fast matmuls on Arc should go through oneDNN (`torch.mm`/`bmm`), not `tl.dot`.
 
