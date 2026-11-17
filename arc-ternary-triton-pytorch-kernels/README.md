@@ -57,7 +57,7 @@ The layer expert pipeline went from 116 ms to 34 ms with the Triton unpack. In s
 kernels/ternary_unpack.py   production Triton unpack kernels (contiguous range, expert-id gather)
 tests/test_unpack.py        standalone correctness + timing test (random data, no model)
 trainer/                    flint_torch.py (model), flint_train.py, flint_supervisor.py, flint_rt.py (GGUF reader), start_train.bat
-                            flint_lora.py, flint_train_lora*.py (LoRA, fast path, packing), export_folded.py, start_train_lora_pack.bat
+                            flint_lora.py, flint_train_lora*.py (LoRA, fast path, packing, experimental bf16x2), export_folded.py, start_train_lora_pack.bat
 kernels/fused_kernels.py    fused RMSNorm and SwiGLU Triton kernels (fast path)
 setup/                      Windows Triton setup notes, triton_env.bat, triton_check.py
 ```
@@ -144,6 +144,28 @@ Run it with `trainer\start_train_lora_pack.bat` (variables listed at the top of 
 Known issue: periodic evals run only when the step count lands exactly on a multiple of `--eval-every`; an example that spans several chunks can step past it, so some evals are skipped.
 
 Also measured (micro-benchmark, one A770): `torch.mm` bf16 reaches about 71 TFLOPS (56 with fp32 output) against about 18 TFLOPS fp32, while Triton `tl.dot` stays near 0.05-0.14 TFLOPS on this build. Fast matmuls on Arc should go through oneDNN (`torch.mm`/`bmm`), not `tl.dot`.
+
+## Experimental: bf16x2 two-product matmuls
+
+`trainer/flint_train_lora_bf16x2.py --fast --pack --bf16x2` runs the weight matmuls on the A770's bf16 matrix (XMX) units through oneDNN (`torch.mm`/`bmm` with `out_dtype=float32`) while keeping fp32-level accuracy:
+
+- Weight scales are rounded to bf16 once, so ternary weights (-1/0/+1 times scale) are exact in bf16.
+- Each fp32 activation is split into `hi = bf16(x)` and `lo = bf16(x - hi)`; both halves are stacked into one matmul twice as tall (fused Triton split kernel), and the two output halves are added.
+- Custom autograd functions save only packed weights and inputs; weights are re-unpacked in backward.
+
+Measured on one Arc A770 16 GB:
+
+| Test | fp32 (packing trainer) | bf16x2 |
+|---|---|---|
+| Single matmul error vs fp32 | - | about 2.5e-6 relative L2, forward and backward |
+| Gradient match with expert routing held fixed | noise 6.5e-6 | 2.7e-5 relative L2 |
+| Eval loss, 40 examples, effect of bf16 scale rounding alone | 0.708419 | 0.708258 (0.02%) |
+| 200 short training examples, trained tok/s | 74.7 | 71.2 (0.95x) |
+| One 10,240-token example, tok/s | 73.5 | 80.4 (1.09x) |
+| Per-step training loss, 99 steps | - | mean 0.4% relative difference |
+| Peak reserved VRAM | 12.65 GiB | 12.53 GiB |
+
+Single matmuls run 1.2-3x faster than fp32, but the split, unpack and the parts left in fp32 (attention scores, routing) cancel most of it, so end to end it is about even on mixed data. It stays off by default. Note: tiny weight changes (such as the scale rounding, or a 1e-5 nudge to the router in pure fp32) flip some near-tie expert choices in this MoE, which alone moves LoRA gradients by about 20%; compare with routing held fixed.
 
 ## Credits and license
 
